@@ -1,6 +1,6 @@
-"""Employee API endpoints."""
+"""Employee API endpoints - thin API layer, delegates business logic to service layer."""
 
-from fastapi import APIRouter, Depends, HTTPException, status, Query
+from fastapi import APIRouter, Depends, HTTPException, status, Query, UploadFile, File
 from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 from typing import Optional
@@ -8,12 +8,16 @@ import csv
 import io
 
 from app.core.database import get_db
-from app.crud.employee import employee_crud
+from app.services.employee import employee_service
 from app.schemas.employee import (
-    EmployeeCreate, 
-    EmployeeUpdate, 
-    EmployeeResponse, 
-    EmployeeListResponse
+    EmployeeCreate,
+    EmployeeUpdate,
+    EmployeeResponse,
+    EmployeeListResponse,
+    BatchUpdateStatusRequest,
+    BatchDeleteRequest,
+    BatchOperationResponse,
+    CsvImportResponse
 )
 from app.api.deps import get_current_user, get_current_admin
 from app.models.user import User
@@ -34,10 +38,8 @@ async def get_employees(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
-    """
-    获取员工列表，支持分页、搜索、筛选和排序。
-    """
-    employees, total = employee_crud.get_list(
+    """Get paginated employee list."""
+    employees, total = employee_service.get_employees(
         db,
         page=page,
         page_size=page_size,
@@ -64,10 +66,8 @@ async def get_departments(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
-    """
-    获取所有部门列表（用于筛选下拉框）。
-    """
-    departments = employee_crud.get_all_departments(db)
+    """Get all unique departments."""
+    departments = employee_service.get_all_departments(db)
     return {"departments": departments}
 
 
@@ -76,10 +76,8 @@ async def get_statistics(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
-    """
-    获取员工统计数据（用于Dashboard图表）。
-    """
-    stats = employee_crud.get_statistics(db)
+    """Get employee statistics for dashboard."""
+    stats = employee_service.get_statistics(db)
     return stats
 
 
@@ -91,29 +89,24 @@ async def export_employees(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
-    """
-    导出员工数据为CSV格式。
-    """
-    employees, _ = employee_crud.get_list(
+    """Export employees to CSV format."""
+    employees, _ = employee_service.get_employees(
         db,
         page=1,
-        page_size=10000,  # Export all
+        page_size=10000,
         search=search,
         department=department,
         status=status
     )
     
-    # Create CSV in memory
     output = io.StringIO()
     writer = csv.writer(output)
     
-    # Write header
     writer.writerow([
-        "工号", "姓名", "性别", "年龄", "部门", "职位", 
+        "工号", "姓名", "性别", "年龄", "部门", "职位",
         "邮箱", "电话", "入职日期", "状态"
     ])
     
-    # Write data
     gender_map = {"male": "男", "female": "女"}
     status_map = {"active": "在职", "inactive": "离职"}
     
@@ -140,16 +133,75 @@ async def export_employees(
     )
 
 
+@router.post("/import", response_model=CsvImportResponse, summary="导入员工数据(CSV)")
+async def import_employees(
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_admin)
+):
+    """Import employees from CSV file (admin only)."""
+    if not file.filename.endswith('.csv'):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="请上传CSV格式文件"
+        )
+    
+    content = await file.read()
+    try:
+        file_content = content.decode('utf-8-sig')
+    except UnicodeDecodeError:
+        try:
+            file_content = content.decode('gbk')
+        except UnicodeDecodeError:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="文件编码不支持，请使用UTF-8或GBK编码"
+            )
+    
+    result = employee_service.import_csv(db, file_content, current_user)
+    return result
+
+
+@router.post("/batch/status", response_model=BatchOperationResponse, summary="批量更新员工状态")
+async def batch_update_status(
+    request: BatchUpdateStatusRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_admin)
+):
+    """Batch update employee status (admin only), inactive employees are skipped."""
+    success_count, failed_items = employee_service.batch_update_status(
+        db, request.ids, request.status, current_user
+    )
+    return BatchOperationResponse(
+        success_count=success_count,
+        failed_items=failed_items
+    )
+
+
+@router.post("/batch/delete", response_model=BatchOperationResponse, summary="批量删除员工")
+async def batch_delete(
+    request: BatchDeleteRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_admin)
+):
+    """Batch delete employees (admin only)."""
+    success_count, failed_items = employee_service.batch_delete(
+        db, request.ids, current_user
+    )
+    return BatchOperationResponse(
+        success_count=success_count,
+        failed_items=failed_items
+    )
+
+
 @router.get("/{employee_id}", response_model=EmployeeResponse, summary="获取员工详情")
 async def get_employee(
     employee_id: int,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
-    """
-    根据ID获取员工详情。
-    """
-    employee = employee_crud.get_by_id(db, employee_id)
+    """Get employee details by ID."""
+    employee = employee_service.get_employee(db, employee_id)
     if not employee:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -162,19 +214,16 @@ async def get_employee(
 async def create_employee(
     employee_in: EmployeeCreate,
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_admin)  # Admin only
+    current_user: User = Depends(get_current_admin)
 ):
-    """
-    创建新员工（仅管理员）。
-    """
-    # Check if email exists
-    if employee_crud.get_by_email(db, email=employee_in.email):
+    """Create new employee (admin only)."""
+    if employee_service.get_employee_by_email(db, email=employee_in.email):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="邮箱已被使用"
         )
     
-    employee = employee_crud.create(db, employee_in)
+    employee = employee_service.create_employee(db, employee_in, current_user)
     return employee
 
 
@@ -183,27 +232,24 @@ async def update_employee(
     employee_id: int,
     employee_in: EmployeeUpdate,
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_admin)  # Admin only
+    current_user: User = Depends(get_current_admin)
 ):
-    """
-    更新员工信息（仅管理员）。
-    """
-    employee = employee_crud.get_by_id(db, employee_id)
+    """Update employee information (admin only)."""
+    employee = employee_service.get_employee(db, employee_id)
     if not employee:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="员工不存在"
         )
     
-    # Check email uniqueness if updating email
     if employee_in.email and employee_in.email != employee.email:
-        if employee_crud.get_by_email(db, email=employee_in.email):
+        if employee_service.get_employee_by_email(db, email=employee_in.email):
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="邮箱已被使用"
             )
     
-    employee = employee_crud.update(db, employee, employee_in)
+    employee = employee_service.update_employee(db, employee, employee_in, current_user)
     return employee
 
 
@@ -211,17 +257,15 @@ async def update_employee(
 async def delete_employee(
     employee_id: int,
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_admin)  # Admin only
+    current_user: User = Depends(get_current_admin)
 ):
-    """
-    删除员工（仅管理员）。
-    """
-    employee = employee_crud.get_by_id(db, employee_id)
+    """Delete employee (admin only)."""
+    employee = employee_service.get_employee(db, employee_id)
     if not employee:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="员工不存在"
         )
     
-    employee_crud.delete(db, employee)
+    employee_service.delete_employee(db, employee, current_user)
     return None

@@ -1,7 +1,7 @@
 """Employee schemas for request/response validation."""
 
 from pydantic import BaseModel, EmailStr
-from typing import Optional, List
+from typing import Optional, List, Dict, Any
 from datetime import date, datetime
 
 from app.models.employee import Gender, EmployeeStatus
@@ -56,3 +56,27 @@ class EmployeeListResponse(BaseModel):
     page: int
     page_size: int
     total_pages: int
+
+
+class BatchUpdateStatusRequest(BaseModel):
+    """Schema for batch status update request."""
+    ids: List[int]
+    status: EmployeeStatus
+
+
+class BatchDeleteRequest(BaseModel):
+    """Schema for batch delete request."""
+    ids: List[int]
+
+
+class BatchOperationResponse(BaseModel):
+    """Schema for batch operation response."""
+    success_count: int
+    failed_items: List[Dict[str, Any]]
+
+
+class CsvImportResponse(BaseModel):
+    """Schema for CSV import response."""
+    success_count: int
+    failed_count: int
+    failed_items: List[Dict[str, Any]]

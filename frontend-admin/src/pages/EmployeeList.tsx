@@ -12,11 +12,15 @@ import {
   Card,
   Row,
   Col,
+  Upload,
+  Alert,
+  List,
 } from 'antd'
 import {
   PlusOutlined,
   SearchOutlined,
   ExportOutlined,
+  ImportOutlined,
   EditOutlined,
   DeleteOutlined,
   EyeOutlined,
@@ -24,11 +28,13 @@ import {
   WomanOutlined,
 } from '@ant-design/icons'
 import type { ColumnsType, TablePaginationConfig } from 'antd/es/table'
+import type { UploadProps } from 'antd'
 import {
   employeeApi,
   Employee,
   EmployeeStatus,
   EmployeeListParams,
+  CsvImportResponse,
 } from '../api/employee'
 import { useAuthStore } from '../stores/authStore'
 
@@ -41,6 +47,10 @@ const EmployeeList = () => {
   const [employees, setEmployees] = useState<Employee[]>([])
   const [total, setTotal] = useState(0)
   const [departments, setDepartments] = useState<string[]>([])
+  const [selectedRowKeys, setSelectedRowKeys] = useState<React.Key[]>([])
+  const [importModalVisible, setImportModalVisible] = useState(false)
+  const [importResult, setImportResult] = useState<CsvImportResponse | null>(null)
+  const [importing, setImporting] = useState(false)
   const [params, setParams] = useState<EmployeeListParams>({
     page: 1,
     page_size: 10,
@@ -61,7 +71,6 @@ const EmployeeList = () => {
       setEmployees(response.items)
       setTotal(response.total)
     } catch {
-      // Error handled by interceptor
     } finally {
       setLoading(false)
     }
@@ -72,7 +81,6 @@ const EmployeeList = () => {
       const response = await employeeApi.getDepartments()
       setDepartments(response.departments)
     } catch {
-      // Error handled by interceptor
     }
   }
 
@@ -87,9 +95,90 @@ const EmployeeList = () => {
         try {
           await employeeApi.delete(record.id)
           message.success('删除成功')
+          setSelectedRowKeys(selectedRowKeys.filter(key => key !== record.id))
           loadEmployees()
         } catch {
-          // Error handled by interceptor
+        }
+      },
+    })
+  }
+
+  const handleBatchStatusChange = (newStatus: EmployeeStatus) => {
+    if (selectedRowKeys.length === 0) {
+      message.warning('请先选择员工')
+      return
+    }
+    const statusText = newStatus === 'active' ? '在职' : '离职'
+    Modal.confirm({
+      title: `批量设为${statusText}`,
+      content: `确定要将选中的 ${selectedRowKeys.length} 名员工状态设为${statusText}吗？已离职员工不会被变更。`,
+      okText: '确认',
+      cancelText: '取消',
+      onOk: async () => {
+        try {
+          const result = await employeeApi.batchUpdateStatus(
+            selectedRowKeys as number[],
+            newStatus
+          )
+          message.success(`成功更新 ${result.success_count} 人`)
+          if (result.failed_items.length > 0) {
+            Modal.info({
+              title: '部分员工未更新',
+              content: (
+                <List
+                  size="small"
+                  dataSource={result.failed_items}
+                  renderItem={item => (
+                    <List.Item>
+                      {item.name || `ID: ${item.id}`}: {item.reason}
+                    </List.Item>
+                  )}
+                />
+              ),
+            })
+          }
+          setSelectedRowKeys([])
+          loadEmployees()
+        } catch {
+        }
+      },
+    })
+  }
+
+  const handleBatchDelete = () => {
+    if (selectedRowKeys.length === 0) {
+      message.warning('请先选择员工')
+      return
+    }
+    Modal.confirm({
+      title: '批量删除',
+      content: `确定要删除选中的 ${selectedRowKeys.length} 名员工吗？此操作不可恢复。`,
+      okText: '删除',
+      okType: 'danger',
+      cancelText: '取消',
+      onOk: async () => {
+        try {
+          const result = await employeeApi.batchDelete(selectedRowKeys as number[])
+          message.success(`成功删除 ${result.success_count} 人`)
+          if (result.failed_items.length > 0) {
+            Modal.info({
+              title: '部分员工未删除',
+              content: (
+                <List
+                  size="small"
+                  dataSource={result.failed_items}
+                  renderItem={item => (
+                    <List.Item>
+                      {item.name || `ID: ${item.id}`}: {item.reason}
+                    </List.Item>
+                  )}
+                />
+              ),
+            })
+          }
+          setSelectedRowKeys([])
+          loadEmployees()
+        } catch {
         }
       },
     })
@@ -99,7 +188,6 @@ const EmployeeList = () => {
     const token = localStorage.getItem('token')
     const url = employeeApi.exportCsv(params)
     
-    // Create a temporary link with auth header
     fetch(url, {
       headers: { Authorization: `Bearer ${token}` },
     })
@@ -120,12 +208,47 @@ const EmployeeList = () => {
       })
   }
 
+  const handleImportClick = () => {
+    setImportResult(null)
+    setImportModalVisible(true)
+  }
+
+  const handleFileChange: UploadProps['beforeUpload'] = (file) => {
+    setImporting(true)
+    setImportResult(null)
+    employeeApi
+      .importCsv(file)
+      .then((result) => {
+        setImportResult(result)
+        message.success(`成功导入 ${result.success_count} 人`)
+        loadEmployees()
+        loadDepartments()
+      })
+      .catch(() => {
+        message.error('导入失败')
+      })
+      .finally(() => {
+        setImporting(false)
+      })
+    return false
+  }
+
   const handleTableChange = (pagination: TablePaginationConfig) => {
     setParams({
       ...params,
       page: pagination.current || 1,
       page_size: pagination.pageSize || 10,
     })
+  }
+
+  const rowSelection = {
+    selectedRowKeys,
+    onChange: (newSelectedRowKeys: React.Key[]) => {
+      setSelectedRowKeys(newSelectedRowKeys)
+    },
+    getCheckboxProps: (record: Employee) => ({
+      disabled: !isAdmin,
+    }),
   }
 
   const columns: ColumnsType<Employee> = [
@@ -292,18 +415,43 @@ const EmployeeList = () => {
                 导出 CSV
               </Button>
               {isAdmin && (
-                <Button
-                  type="primary"
-                  icon={<PlusOutlined />}
-                  onClick={() => navigate('/employees/new')}
-                >
-                  添加员工
-                </Button>
+                <>
+                  <Button icon={<ImportOutlined />} onClick={handleImportClick}>
+                    导入 CSV
+                  </Button>
+                  <Button
+                    type="primary"
+                    icon={<PlusOutlined />}
+                    onClick={() => navigate('/employees/new')}
+                  >
+                    添加员工
+                  </Button>
+                </>
               )}
             </Space>
           </Col>
         </Row>
       </Card>
+
+      {isAdmin && selectedRowKeys.length > 0 && (
+        <Card style={{ marginBottom: 16 }} size="small">
+          <Space>
+            <span>已选择 {selectedRowKeys.length} 项</span>
+            <Button size="small" onClick={() => handleBatchStatusChange('active')}>
+              设为在职
+            </Button>
+            <Button size="small" onClick={() => handleBatchStatusChange('inactive')}>
+              设为离职
+            </Button>
+            <Button size="small" danger onClick={handleBatchDelete}>
+              批量删除
+            </Button>
+            <Button size="small" onClick={() => setSelectedRowKeys([])}>
+              取消选择
+            </Button>
+          </Space>
+        </Card>
+      )}
 
       <Card>
         <Table
@@ -312,6 +460,7 @@ const EmployeeList = () => {
           rowKey="id"
           loading={loading}
           scroll={{ x: 1200 }}
+          rowSelection={isAdmin ? rowSelection : undefined}
           pagination={{
             current: params.page,
             pageSize: params.page_size,
@@ -323,6 +472,55 @@ const EmployeeList = () => {
           onChange={handleTableChange}
         />
       </Card>
+
+      <Modal
+        title="导入员工数据"
+        open={importModalVisible}
+        onCancel={() => setImportModalVisible(false)}
+        footer={null}
+        width={600}
+      >
+        <div style={{ marginBottom: 16 }}>
+          <p style={{ marginBottom: 8 }}>请选择 CSV 文件导入，格式需与导出格式一致。</p>
+          <p style={{ marginBottom: 16, color: '#666', fontSize: 12 }}>
+            必填字段：姓名、邮箱、部门、职位、性别、年龄、入职日期。出错的行不会阻断其他行的导入。
+          </p>
+          <Upload
+            accept=".csv"
+            showUploadList={false}
+            beforeUpload={handleFileChange}
+          >
+            <Button icon={<ImportOutlined />} loading={importing}>
+              选择文件
+            </Button>
+          </Upload>
+        </div>
+
+        {importResult && (
+          <div>
+            <Alert
+              message={`导入完成：成功 ${importResult.success_count} 人，失败 ${importResult.failed_items.length} 行`}
+              type={importResult.failed_items.length > 0 ? 'warning' : 'success'}
+              showIcon
+              style={{ marginBottom: 16 }}
+            />
+            {importResult.failed_items.length > 0 && (
+              <List
+                size="small"
+                header="失败详情"
+                bordered
+                dataSource={importResult.failed_items}
+                renderItem={(item) => (
+                  <List.Item>
+                    第 {item.row} 行{item.name ? ` (${item.name})` : ''}: {item.reason}
+                  </List.Item>
+                )}
+                style={{ maxHeight: 300, overflow: 'auto' }}
+              />
+            )}
+          </div>
+        )}
+      </Modal>
     </div>
   )
 }
