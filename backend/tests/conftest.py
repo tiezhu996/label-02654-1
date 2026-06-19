@@ -5,12 +5,15 @@ from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
+from starlette.testclient import TestClient as StarletteTestClient
 
 from app.main import app
 from app.core.database import Base, get_db
 from app.models.user import User, UserRole
-from app.models.employee import Employee
+from app.models.employee import Employee, Gender, EmployeeStatus
+from app.models.audit_log import AuditLog
 from app.core.security import get_password_hash
+from datetime import date
 
 # Use SQLite for testing
 SQLALCHEMY_DATABASE_URL = "sqlite://"
@@ -49,10 +52,14 @@ def client(db_session):
     """Create a test client with database override."""
     app.dependency_overrides[get_db] = override_get_db
     Base.metadata.create_all(bind=engine)
-    
-    with TestClient(app) as test_client:
-        yield test_client
-    
+
+    try:
+        with TestClient(app) as test_client:
+            yield test_client
+    except TypeError:
+        with StarletteTestClient(app) as test_client:
+            yield test_client
+
     Base.metadata.drop_all(bind=engine)
     app.dependency_overrides.clear()
 
@@ -114,9 +121,6 @@ def user_token(client, normal_user):
 @pytest.fixture(scope="function")
 def sample_employee(db_session):
     """Create a sample employee for testing."""
-    from datetime import date
-    from app.models.employee import Gender, EmployeeStatus
-    
     employee = Employee(
         employee_id="EMP20260101TEST01",
         name="测试员工",
@@ -124,10 +128,31 @@ def sample_employee(db_session):
         age=30,
         department="技术部",
         position="工程师",
-        email="test@example.com",
-        phone="13800000000",
+        email="t***@***********",
+        phone="138******00",
         hire_date=date(2024, 1, 1),
         status=EmployeeStatus.ACTIVE
+    )
+    db_session.add(employee)
+    db_session.commit()
+    db_session.refresh(employee)
+    return employee
+
+
+@pytest.fixture(scope="function")
+def sample_inactive_employee(db_session):
+    """Create an inactive sample employee for testing."""
+    employee = Employee(
+        employee_id="EMP20260101TEST02",
+        name="离职员工",
+        gender=Gender.FEMALE,
+        age=28,
+        department="市场部",
+        position="专员",
+        email="i******@***********",
+        phone="138******01",
+        hire_date=date(2023, 6, 1),
+        status=EmployeeStatus.INACTIVE
     )
     db_session.add(employee)
     db_session.commit()

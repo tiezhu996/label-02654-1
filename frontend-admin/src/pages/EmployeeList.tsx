@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import {
   Table,
@@ -12,6 +12,7 @@ import {
   Card,
   Row,
   Col,
+  Alert,
 } from 'antd'
 import {
   PlusOutlined,
@@ -22,6 +23,8 @@ import {
   EyeOutlined,
   ManOutlined,
   WomanOutlined,
+  ImportOutlined,
+  UserSwitchOutlined,
 } from '@ant-design/icons'
 import type { ColumnsType, TablePaginationConfig } from 'antd/es/table'
 import {
@@ -41,6 +44,17 @@ const EmployeeList = () => {
   const [employees, setEmployees] = useState<Employee[]>([])
   const [total, setTotal] = useState(0)
   const [departments, setDepartments] = useState<string[]>([])
+  const [selectedRowKeys, setSelectedRowKeys] = useState<React.Key[]>([])
+  const [batchModalVisible, setBatchModalVisible] = useState(false)
+  const [batchAction, setBatchAction] = useState<'active' | 'inactive' | 'delete' | null>(null)
+  const [importing, setImporting] = useState(false)
+  const [importResult, setImportResult] = useState<{
+    visible: boolean
+    success: number
+    failed: number
+    errors: string[]
+  } | null>(null)
+  const fileInputRef = useRef<HTMLInputElement>(null)
   const [params, setParams] = useState<EmployeeListParams>({
     page: 1,
     page_size: 10,
@@ -87,6 +101,7 @@ const EmployeeList = () => {
         try {
           await employeeApi.delete(record.id)
           message.success('删除成功')
+          setSelectedRowKeys(selectedRowKeys.filter((key) => key !== record.id))
           loadEmployees()
         } catch {
           // Error handled by interceptor
@@ -98,8 +113,7 @@ const EmployeeList = () => {
   const handleExport = () => {
     const token = localStorage.getItem('token')
     const url = employeeApi.exportCsv(params)
-    
-    // Create a temporary link with auth header
+
     fetch(url, {
       headers: { Authorization: `Bearer ${token}` },
     })
@@ -120,12 +134,115 @@ const EmployeeList = () => {
       })
   }
 
+  const handleImportClick = () => {
+    fileInputRef.current?.click()
+  }
+
+  const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0]
+    if (!file) return
+
+    if (!file.name.endsWith('.csv')) {
+      message.error('请选择CSV文件')
+      return
+    }
+
+    setImporting(true)
+    try {
+      const result = await employeeApi.importCsv(file)
+      const errors = result.results
+        .filter((r) => !r.success)
+        .map((r) => `第${r.row}行: ${r.message}`)
+
+      setImportResult({
+        visible: true,
+        success: result.success_count,
+        failed: result.failed_count,
+        errors,
+      })
+
+      if (result.success_count > 0) {
+        loadEmployees()
+      }
+    } catch {
+      // Error handled by interceptor
+    } finally {
+      setImporting(false)
+      if (fileInputRef.current) {
+        fileInputRef.current.value = ''
+      }
+    }
+  }
+
+  const showBatchModal = (action: 'active' | 'inactive' | 'delete') => {
+    if (selectedRowKeys.length === 0) {
+      message.warning('请先选择要操作的员工')
+      return
+    }
+    setBatchAction(action)
+    setBatchModalVisible(true)
+  }
+
+  const handleBatchConfirm = async () => {
+    const ids = selectedRowKeys.map((key) => Number(key))
+    try {
+      if (batchAction === 'delete') {
+        const result = await employeeApi.batchDelete(ids)
+        message.success(`批量删除完成: 成功 ${result.success_count} 条，失败 ${result.failed_count} 条`)
+        if (result.errors.length > 0) {
+          Modal.error({
+            title: '部分操作失败',
+            content: (
+              <ul style={{ maxHeight: 300, overflow: 'auto', paddingLeft: 20 }}>
+                {result.errors.map((err, idx) => (
+                  <li key={idx}>{err.message}</li>
+                ))}
+              </ul>
+            ),
+          })
+        }
+      } else if (batchAction === 'active' || batchAction === 'inactive') {
+        const result = await employeeApi.batchUpdateStatus(ids, batchAction as EmployeeStatus)
+        message.success(`批量修改状态完成: 成功 ${result.success_count} 条，失败 ${result.failed_count} 条`)
+        if (result.errors.length > 0) {
+          Modal.error({
+            title: '部分操作失败',
+            content: (
+              <ul style={{ maxHeight: 300, overflow: 'auto', paddingLeft: 20 }}>
+                {result.errors.map((err, idx) => (
+                  <li key={idx}>{err.message}</li>
+                ))}
+              </ul>
+            ),
+          })
+        }
+      }
+      setSelectedRowKeys([])
+      setBatchModalVisible(false)
+      loadEmployees()
+    } catch {
+      // Error handled by interceptor
+    }
+  }
+
   const handleTableChange = (pagination: TablePaginationConfig) => {
     setParams({
       ...params,
       page: pagination.current || 1,
       page_size: pagination.pageSize || 10,
     })
+  }
+
+  const onSelectChange = (newSelectedRowKeys: React.Key[]) => {
+    setSelectedRowKeys(newSelectedRowKeys)
+  }
+
+  const rowSelection = {
+    selectedRowKeys,
+    onChange: onSelectChange,
+    getCheckboxProps: (record: Employee) => ({
+      disabled: !isAdmin,
+    }),
   }
 
   const columns: ColumnsType<Employee> = [
@@ -240,6 +357,20 @@ const EmployeeList = () => {
     },
   ]
 
+  const getBatchModalContent = () => {
+    const count = selectedRowKeys.length
+    if (batchAction === 'delete') {
+      return `确定要删除选中的 ${count} 名员工吗？此操作不可恢复。`
+    }
+    if (batchAction === 'inactive') {
+      return `确定要将选中的 ${count} 名员工设置为离职状态吗？已离职的员工将被跳过。`
+    }
+    if (batchAction === 'active') {
+      return `确定要将选中的 ${count} 名员工设置为在职状态吗？`
+    }
+    return ''
+  }
+
   return (
     <div>
       <Card style={{ marginBottom: 16 }}>
@@ -292,21 +423,97 @@ const EmployeeList = () => {
                 导出 CSV
               </Button>
               {isAdmin && (
-                <Button
-                  type="primary"
-                  icon={<PlusOutlined />}
-                  onClick={() => navigate('/employees/new')}
-                >
-                  添加员工
-                </Button>
+                <>
+                  <Button
+                    icon={<ImportOutlined />}
+                    onClick={handleImportClick}
+                    loading={importing}
+                  >
+                    导入 CSV
+                  </Button>
+                  <input
+                    type="file"
+                    ref={fileInputRef}
+                    accept=".csv"
+                    style={{ display: 'none' }}
+                    onChange={handleFileChange}
+                  />
+                  <Button
+                    type="primary"
+                    icon={<PlusOutlined />}
+                    onClick={() => navigate('/employees/new')}
+                  >
+                    添加员工
+                  </Button>
+                </>
               )}
             </Space>
           </Col>
         </Row>
       </Card>
 
+      {isAdmin && selectedRowKeys.length > 0 && (
+        <Card style={{ marginBottom: 16 }} size="small">
+          <Space>
+            <span>已选择 {selectedRowKeys.length} 项</span>
+            <Button
+              size="small"
+              icon={<UserSwitchOutlined />}
+              onClick={() => showBatchModal('active')}
+            >
+              批量设为在职
+            </Button>
+            <Button
+              size="small"
+              icon={<UserSwitchOutlined />}
+              onClick={() => showBatchModal('inactive')}
+            >
+              批量设为离职
+            </Button>
+            <Button
+              size="small"
+              danger
+              icon={<DeleteOutlined />}
+              onClick={() => showBatchModal('delete')}
+            >
+              批量删除
+            </Button>
+          </Space>
+        </Card>
+      )}
+
+      {importResult?.visible && (
+        <Card style={{ marginBottom: 16 }} size="small">
+          <Alert
+            message="CSV导入完成"
+            description={
+              <div>
+                <p>成功: {importResult.success} 条，失败: {importResult.failed} 条</p>
+                {importResult.errors.length > 0 && (
+                  <details>
+                    <summary style={{ cursor: 'pointer', color: '#ff4d4f' }}>
+                      查看失败详情
+                    </summary>
+                    <ul style={{ marginTop: 8, maxHeight: 200, overflow: 'auto', paddingLeft: 20 }}>
+                      {importResult.errors.map((err, idx) => (
+                        <li key={idx} style={{ color: '#ff4d4f' }}>{err}</li>
+                      ))}
+                    </ul>
+                  </details>
+                )}
+              </div>
+            }
+            type={importResult.failed > 0 ? 'warning' : 'success'}
+            showIcon
+            closable
+            onClose={() => setImportResult(null)}
+          />
+        </Card>
+      )}
+
       <Card>
         <Table
+          rowSelection={isAdmin ? rowSelection : undefined}
           columns={columns}
           dataSource={employees}
           rowKey="id"
@@ -323,6 +530,18 @@ const EmployeeList = () => {
           onChange={handleTableChange}
         />
       </Card>
+
+      <Modal
+        title="确认批量操作"
+        open={batchModalVisible}
+        onOk={handleBatchConfirm}
+        onCancel={() => setBatchModalVisible(false)}
+        okText="确认"
+        cancelText="取消"
+        okType={batchAction === 'delete' ? 'danger' : 'primary'}
+      >
+        <p>{getBatchModalContent()}</p>
+      </Modal>
     </div>
   )
 }
