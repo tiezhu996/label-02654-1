@@ -1,4 +1,4 @@
-"""CRUD operations for Employee model."""
+"""CRUD operations for Employee model - pure data access layer."""
 
 from sqlalchemy.orm import Session
 from sqlalchemy import or_, func, extract
@@ -11,7 +11,7 @@ from app.schemas.employee import EmployeeCreate, EmployeeUpdate
 
 
 class EmployeeCRUD:
-    """CRUD operations for Employee."""
+    """Pure data access operations for Employee - no business logic or audit."""
     
     def _generate_employee_id(self) -> str:
         """Generate a unique employee ID."""
@@ -29,6 +29,10 @@ class EmployeeCRUD:
         """Get employee by email."""
         return db.query(Employee).filter(Employee.email == email).first()
     
+    def get_by_ids(self, db: Session, ids: List[int]) -> List[Employee]:
+        """Get employees by list of IDs."""
+        return db.query(Employee).filter(Employee.id.in_(ids)).all()
+    
     def get_list(
         self,
         db: Session,
@@ -43,7 +47,6 @@ class EmployeeCRUD:
         """Get paginated list of employees with filters."""
         query = db.query(Employee)
         
-        # Apply search filter
         if search:
             search_filter = or_(
                 Employee.name.ilike(f"%{search}%"),
@@ -52,32 +55,27 @@ class EmployeeCRUD:
             )
             query = query.filter(search_filter)
         
-        # Apply department filter
         if department:
             query = query.filter(Employee.department == department)
         
-        # Apply status filter
         if status:
             query = query.filter(Employee.status == status)
         
-        # Get total count
         total = query.count()
         
-        # Apply sorting
         sort_column = getattr(Employee, sort_by, Employee.created_at)
         if sort_order == "desc":
             query = query.order_by(sort_column.desc())
         else:
             query = query.order_by(sort_column.asc())
         
-        # Apply pagination
         offset = (page - 1) * page_size
         employees = query.offset(offset).limit(page_size).all()
         
         return employees, total
     
     def create(self, db: Session, employee_in: EmployeeCreate) -> Employee:
-        """Create a new employee."""
+        """Create a new employee (pure data access)."""
         db_employee = Employee(
             employee_id=self._generate_employee_id(),
             **employee_in.model_dump()
@@ -88,18 +86,16 @@ class EmployeeCRUD:
         return db_employee
     
     def update(self, db: Session, employee: Employee, employee_in: EmployeeUpdate) -> Employee:
-        """Update an existing employee."""
+        """Update an existing employee (pure data access)."""
         update_data = employee_in.model_dump(exclude_unset=True)
-        
         for field, value in update_data.items():
             setattr(employee, field, value)
-        
         db.commit()
         db.refresh(employee)
         return employee
     
     def delete(self, db: Session, employee: Employee) -> None:
-        """Delete an employee."""
+        """Delete an employee (pure data access)."""
         db.delete(employee)
         db.commit()
     
@@ -110,33 +106,24 @@ class EmployeeCRUD:
     
     def get_statistics(self, db: Session) -> dict:
         """Get employee statistics for dashboard."""
-        # Total employees
         total = db.query(Employee).count()
-        
-        # Active employees
         active = db.query(Employee).filter(Employee.status == EmployeeStatus.ACTIVE).count()
-        
-        # Inactive employees
         inactive = db.query(Employee).filter(Employee.status == EmployeeStatus.INACTIVE).count()
         
-        # This month new hires
         now = datetime.now()
         this_month_hires = db.query(Employee).filter(
             extract('year', Employee.hire_date) == now.year,
             extract('month', Employee.hire_date) == now.month
         ).count()
         
-        # Gender distribution
         male_count = db.query(Employee).filter(Employee.gender == Gender.MALE).count()
         female_count = db.query(Employee).filter(Employee.gender == Gender.FEMALE).count()
         
-        # Department distribution
         dept_stats = db.query(
             Employee.department,
             func.count(Employee.id)
         ).group_by(Employee.department).all()
         
-        # Monthly hire trend (last 12 months)
         hire_trend = []
         for i in range(11, -1, -1):
             month = now.month - i
