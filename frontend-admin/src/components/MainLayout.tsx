@@ -16,6 +16,7 @@ import {
   LogoutOutlined,
   MenuFoldOutlined,
   MenuUnfoldOutlined,
+  AuditOutlined,
 } from '@ant-design/icons'
 import { useAuthStore } from '../stores/authStore'
 
@@ -26,7 +27,7 @@ const MainLayout = () => {
   const [collapsed, setCollapsed] = useState(false)
   const navigate = useNavigate()
   const location = useLocation()
-  const { user, logout } = useAuthStore()
+  const { user, logout, isAdmin } = useAuthStore()
   const { token } = theme.useToken()
 
   const menuItems = [
@@ -40,6 +41,15 @@ const MainLayout = () => {
       icon: <TeamOutlined />,
       label: '员工管理',
     },
+    ...(isAdmin
+      ? [
+          {
+            key: '/audit-logs',
+            icon: <AuditOutlined />,
+            label: '审计日志',
+          },
+        ]
+      : []),
   ]
 
   const handleMenuClick = ({ key }: { key: string }) => {

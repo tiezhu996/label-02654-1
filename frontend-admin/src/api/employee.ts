@@ -81,6 +81,24 @@ export interface Statistics {
   }>
 }
 
+export interface BulkOperationResult {
+  message: string
+  success_count: number
+  skipped_inactive?: Array<{ id: number; employee_id: string; name: string }>
+  not_found_ids?: number[]
+}
+
+export interface CsvImportRowError {
+  row: number
+  message: string
+}
+
+export interface CsvImportResult {
+  success_count: number
+  failed_count: number
+  errors: CsvImportRowError[]
+}
+
 export const employeeApi = {
   getList: (params: EmployeeListParams): Promise<EmployeeListResponse> => {
     return request.get('/employees', { params })
@@ -116,5 +134,21 @@ export const employeeApi = {
     if (params?.department) searchParams.append('department', params.department)
     if (params?.status) searchParams.append('status', params.status)
     return `/api/employees/export?${searchParams.toString()}`
+  },
+
+  bulkUpdateStatus: (ids: number[], status: EmployeeStatus): Promise<BulkOperationResult> => {
+    return request.post('/employees/bulk-status-update', { ids, status })
+  },
+
+  bulkDelete: (ids: number[]): Promise<BulkOperationResult> => {
+    return request.post('/employees/bulk-delete', { ids })
+  },
+
+  importCsv: (file: File): Promise<CsvImportResult> => {
+    const formData = new FormData()
+    formData.append('file', file)
+    return request.post('/employees/import', formData, {
+      headers: { 'Content-Type': 'multipart/form-data' },
+    })
   },
 }
