@@ -12,7 +12,10 @@ import {
   Card,
   Row,
   Col,
+  Dropdown,
+  Upload,
 } from 'antd'
+import type { MenuProps } from 'antd'
 import {
   PlusOutlined,
   SearchOutlined,
@@ -22,6 +25,8 @@ import {
   EyeOutlined,
   ManOutlined,
   WomanOutlined,
+  ImportOutlined,
+  DownOutlined,
 } from '@ant-design/icons'
 import type { ColumnsType, TablePaginationConfig } from 'antd/es/table'
 import {
@@ -31,6 +36,7 @@ import {
   EmployeeListParams,
 } from '../api/employee'
 import { useAuthStore } from '../stores/authStore'
+import type { UploadProps } from 'antd'
 
 const { Option } = Select
 
@@ -41,6 +47,7 @@ const EmployeeList = () => {
   const [employees, setEmployees] = useState<Employee[]>([])
   const [total, setTotal] = useState(0)
   const [departments, setDepartments] = useState<string[]>([])
+  const [selectedRowKeys, setSelectedRowKeys] = useState<React.Key[]>([])
   const [params, setParams] = useState<EmployeeListParams>({
     page: 1,
     page_size: 10,
@@ -53,6 +60,10 @@ const EmployeeList = () => {
     loadEmployees()
     loadDepartments()
   }, [params])
+
+  useEffect(() => {
+    setSelectedRowKeys([])
+  }, [params.page, params.page_size, params.search, params.department, params.status])
 
   const loadEmployees = async () => {
     setLoading(true)
@@ -95,11 +106,72 @@ const EmployeeList = () => {
     })
   }
 
+  const handleBulkStatusUpdate = (targetStatus: EmployeeStatus) => {
+    if (selectedRowKeys.length === 0) {
+      message.warning('请先选择要操作的员工')
+      return
+    }
+
+    const ids = selectedRowKeys as number[]
+    const inactiveSelected = employees.filter(
+      (e) => ids.includes(e.id) && e.status === 'inactive'
+    )
+
+    const statusText = targetStatus === 'active' ? '在职' : '离职'
+
+    let content = `确定要将选中的 ${ids.length} 名员工状态修改为"${statusText}"吗？`
+    if (targetStatus === 'inactive' && inactiveSelected.length > 0) {
+      content += `\n\n注意：已选中的 ${inactiveSelected.length} 名离职员工将被跳过（不允许批量变更已离职员工状态）。`
+    }
+
+    Modal.confirm({
+      title: `批量修改状态为"${statusText}"`,
+      content,
+      okText: '确认修改',
+      okType: 'primary',
+      cancelText: '取消',
+      onOk: async () => {
+        try {
+          const result = await employeeApi.bulkUpdateStatus(ids, targetStatus)
+          message.success(result.message)
+          setSelectedRowKeys([])
+          loadEmployees()
+        } catch {
+          // Error handled by interceptor
+        }
+      },
+    })
+  }
+
+  const handleBulkDelete = () => {
+    if (selectedRowKeys.length === 0) {
+      message.warning('请先选择要删除的员工')
+      return
+    }
+
+    Modal.confirm({
+      title: '批量删除确认',
+      content: `确定要删除选中的 ${selectedRowKeys.length} 名员工吗？此操作不可恢复。`,
+      okText: '删除',
+      okType: 'danger',
+      cancelText: '取消',
+      onOk: async () => {
+        try {
+          const result = await employeeApi.bulkDelete(selectedRowKeys as number[])
+          message.success(result.message)
+          setSelectedRowKeys([])
+          loadEmployees()
+        } catch {
+          // Error handled by interceptor
+        }
+      },
+    })
+  }
+
   const handleExport = () => {
     const token = localStorage.getItem('token')
     const url = employeeApi.exportCsv(params)
-    
-    // Create a temporary link with auth header
+
     fetch(url, {
       headers: { Authorization: `Bearer ${token}` },
     })
@@ -120,6 +192,71 @@ const EmployeeList = () => {
       })
   }
 
+  const uploadProps: UploadProps = {
+    accept: '.csv',
+    showUploadList: false,
+    beforeUpload: async (file) => {
+      try {
+        message.loading({ content: '正在导入...', key: 'import' })
+        const result = await employeeApi.importCsv(file)
+        message.destroy('import')
+
+        const { success_count, failed_count, errors } = result
+        if (failed_count === 0) {
+          message.success(`导入成功！共导入 ${success_count} 条记录`)
+        } else if (success_count > 0) {
+          message.warning(`导入完成：成功 ${success_count} 条，失败 ${failed_count} 条`)
+          Modal.info({
+            title: '导入结果详情',
+            width: 600,
+            content: (
+              <div style={{ maxHeight: 400, overflowY: 'auto' }}>
+                <p>
+                  成功：<strong style={{ color: '#52c41a' }}>{success_count} 条</strong>，
+                  失败：<strong style={{ color: '#ff4d4f' }}>{failed_count} 条</strong>
+                </p>
+                {errors.length > 0 && (
+                  <div>
+                    <p><strong>失败详情：</strong></p>
+                    <ul style={{ paddingLeft: 20 }}>
+                      {errors.map((e, i) => (
+                        <li key={i} style={{ color: '#ff4d4f', marginBottom: 4 }}>
+                          第 {e.row} 行：{e.message}
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+              </div>
+            ),
+          })
+        } else {
+          message.error(`导入失败：共 ${failed_count} 条记录出错`)
+          Modal.error({
+            title: '导入失败详情',
+            width: 600,
+            content: (
+              <div style={{ maxHeight: 400, overflowY: 'auto' }}>
+                <ul style={{ paddingLeft: 20 }}>
+                  {errors.map((e, i) => (
+                    <li key={i} style={{ color: '#ff4d4f', marginBottom: 4 }}>
+                      第 {e.row} 行：{e.message}
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            ),
+          })
+        }
+        loadEmployees()
+      } catch {
+        message.destroy('import')
+        // Error handled by interceptor
+      }
+      return false
+    },
+  }
+
   const handleTableChange = (pagination: TablePaginationConfig) => {
     setParams({
       ...params,
@@ -127,6 +264,30 @@ const EmployeeList = () => {
       page_size: pagination.pageSize || 10,
     })
   }
+
+  const bulkActionMenu: MenuProps['items'] = [
+    {
+      key: 'setActive',
+      label: '设为在职',
+      disabled: selectedRowKeys.length === 0,
+      onClick: () => handleBulkStatusUpdate('active'),
+    },
+    {
+      key: 'setInactive',
+      label: '设为离职',
+      disabled: selectedRowKeys.length === 0,
+      onClick: () => handleBulkStatusUpdate('inactive'),
+    },
+    {
+      type: 'divider',
+    },
+    {
+      key: 'bulkDelete',
+      label: <span style={{ color: '#ff4d4f' }}>批量删除</span>,
+      disabled: selectedRowKeys.length === 0,
+      onClick: handleBulkDelete,
+    },
+  ]
 
   const columns: ColumnsType<Employee> = [
     {
@@ -240,6 +401,19 @@ const EmployeeList = () => {
     },
   ]
 
+  const rowSelection = isAdmin
+    ? {
+        selectedRowKeys,
+        onChange: (newSelectedRowKeys: React.Key[]) => {
+          setSelectedRowKeys(newSelectedRowKeys)
+        },
+        getCheckboxProps: (record: Employee) => ({
+          disabled: false,
+          name: record.name,
+        }),
+      }
+    : undefined
+
   return (
     <div>
       <Card style={{ marginBottom: 16 }}>
@@ -292,21 +466,59 @@ const EmployeeList = () => {
                 导出 CSV
               </Button>
               {isAdmin && (
-                <Button
-                  type="primary"
-                  icon={<PlusOutlined />}
-                  onClick={() => navigate('/employees/new')}
-                >
-                  添加员工
-                </Button>
+                <>
+                  <Upload {...uploadProps}>
+                    <Button icon={<ImportOutlined />}>导入 CSV</Button>
+                  </Upload>
+                  <Button
+                    type="primary"
+                    icon={<PlusOutlined />}
+                    onClick={() => navigate('/employees/new')}
+                  >
+                    添加员工
+                  </Button>
+                </>
               )}
             </Space>
           </Col>
         </Row>
       </Card>
 
+      {isAdmin && selectedRowKeys.length > 0 && (
+        <Card
+          style={{
+            marginBottom: 16,
+            background: '#e6f4ff',
+            border: '1px solid #91caff',
+          }}
+        >
+          <Row align="middle" justify="space-between">
+            <Col>
+              <Space>
+                <span>已选择 <strong>{selectedRowKeys.length}</strong> 项</span>
+                <Button
+                  type="link"
+                  size="small"
+                  onClick={() => setSelectedRowKeys([])}
+                >
+                  取消选择
+                </Button>
+              </Space>
+            </Col>
+            <Col>
+              <Dropdown menu={{ items: bulkActionMenu }}>
+                <Button type="primary">
+                  批量操作 <DownOutlined />
+                </Button>
+              </Dropdown>
+            </Col>
+          </Row>
+        </Card>
+      )}
+
       <Card>
         <Table
+          rowSelection={rowSelection}
           columns={columns}
           dataSource={employees}
           rowKey="id"
