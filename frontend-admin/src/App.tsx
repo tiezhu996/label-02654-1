@@ -6,6 +6,7 @@ import Dashboard from './pages/Dashboard'
 import EmployeeList from './pages/EmployeeList'
 import EmployeeForm from './pages/EmployeeForm'
 import EmployeeDetail from './pages/EmployeeDetail'
+import AuditLogList from './pages/AuditLogList'
 
 // Protected route wrapper
 const ProtectedRoute = ({ children }: { children: React.ReactNode }) => {
@@ -37,6 +38,7 @@ function App() {
           <Route path="employees/new" element={<EmployeeForm />} />
           <Route path="employees/:id" element={<EmployeeDetail />} />
           <Route path="employees/:id/edit" element={<EmployeeForm />} />
+          <Route path="audit-logs" element={<AuditLogList />} />
         </Route>
       </Routes>
     </BrowserRouter>
