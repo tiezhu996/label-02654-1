@@ -6,6 +6,7 @@ import Dashboard from './pages/Dashboard'
 import EmployeeList from './pages/EmployeeList'
 import EmployeeForm from './pages/EmployeeForm'
 import EmployeeDetail from './pages/EmployeeDetail'
+import AuditLogPage from './pages/AuditLogPage'
 
 // Protected route wrapper
 const ProtectedRoute = ({ children }: { children: React.ReactNode }) => {
@@ -15,6 +16,19 @@ const ProtectedRoute = ({ children }: { children: React.ReactNode }) => {
     return <Navigate to="/login" replace />
   }
   
+  return <>{children}</>
+}
+
+// Admin-only route wrapper
+const AdminRoute = ({ children }: { children: React.ReactNode }) => {
+  const { isAuthenticated, isAdmin } = useAuthStore()
+
+  if (!isAuthenticated) {
+    return <Navigate to="/login" replace />
+  }
+  if (!isAdmin) {
+    return <Navigate to="/dashboard" replace />
+  }
   return <>{children}</>
 }
 
@@ -37,6 +51,14 @@ function App() {
           <Route path="employees/new" element={<EmployeeForm />} />
           <Route path="employees/:id" element={<EmployeeDetail />} />
           <Route path="employees/:id/edit" element={<EmployeeForm />} />
+          <Route
+            path="audit-logs"
+            element={
+              <AdminRoute>
+                <AuditLogPage />
+              </AdminRoute>
+            }
+          />
         </Route>
       </Routes>
     </BrowserRouter>

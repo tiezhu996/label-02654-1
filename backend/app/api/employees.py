@@ -1,6 +1,6 @@
 """Employee API endpoints."""
 
-from fastapi import APIRouter, Depends, HTTPException, status, Query
+from fastapi import APIRouter, Depends, HTTPException, status, Query, UploadFile, File
 from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 from typing import Optional
@@ -10,10 +10,14 @@ import io
 from app.core.database import get_db
 from app.crud.employee import employee_crud
 from app.schemas.employee import (
-    EmployeeCreate, 
-    EmployeeUpdate, 
-    EmployeeResponse, 
-    EmployeeListResponse
+    EmployeeCreate,
+    EmployeeUpdate,
+    EmployeeResponse,
+    EmployeeListResponse,
+    BulkUpdateStatusRequest,
+    BulkDeleteRequest,
+    BulkOperationResult,
+    CsvImportResult,
 )
 from app.api.deps import get_current_user, get_current_admin
 from app.models.user import User
@@ -140,6 +144,88 @@ async def export_employees(
     )
 
 
+@router.post(
+    "/import",
+    response_model=CsvImportResult,
+    summary="CSV 导入员工(仅管理员)",
+)
+async def import_employees(
+    file: UploadFile = File(..., description="CSV 文件,格式与导出 CSV 一致"),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_admin),
+):
+    """
+    通过 CSV 批量导入员工(仅管理员)。
+    - 文件格式与导出 CSV 一致(中文表头);
+    - 逐行独立校验邮箱唯一性和必填字段;
+    - 任意行失败不阻断整批操作;
+    - 返回成功条数和每行失败原因。
+    """
+    if not file.filename or not file.filename.lower().endswith(".csv"):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="请上传 .csv 文件",
+        )
+    csv_bytes = await file.read()
+    if not csv_bytes:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="文件为空",
+        )
+    return employee_crud.import_from_csv(db, csv_bytes=csv_bytes, operator=current_user)
+
+
+@router.post(
+    "/bulk-status",
+    response_model=BulkOperationResult,
+    summary="批量修改员工状态(仅管理员)",
+)
+async def bulk_update_status(
+    payload: BulkUpdateStatusRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_admin),
+):
+    """
+    批量修改员工状态(仅管理员)。已离职员工不允许通过批量操作变更状态。
+    """
+    if not payload.ids:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="请选择要操作的员工",
+        )
+    return employee_crud.bulk_update_status(
+        db,
+        ids=payload.ids,
+        new_status=payload.status,
+        operator=current_user,
+    )
+
+
+@router.post(
+    "/bulk-delete",
+    response_model=BulkOperationResult,
+    summary="批量删除员工(仅管理员)",
+)
+async def bulk_delete(
+    payload: BulkDeleteRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_admin),
+):
+    """
+    批量删除员工(仅管理员)。
+    """
+    if not payload.ids:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="请选择要删除的员工",
+        )
+    return employee_crud.bulk_delete(
+        db,
+        ids=payload.ids,
+        operator=current_user,
+    )
+
+
 @router.get("/{employee_id}", response_model=EmployeeResponse, summary="获取员工详情")
 async def get_employee(
     employee_id: int,
@@ -174,7 +260,7 @@ async def create_employee(
             detail="邮箱已被使用"
         )
     
-    employee = employee_crud.create(db, employee_in)
+    employee = employee_crud.create(db, employee_in, operator=current_user)
     return employee
 
 
@@ -203,7 +289,7 @@ async def update_employee(
                 detail="邮箱已被使用"
             )
     
-    employee = employee_crud.update(db, employee, employee_in)
+    employee = employee_crud.update(db, employee, employee_in, operator=current_user)
     return employee
 
 
@@ -223,5 +309,5 @@ async def delete_employee(
             detail="员工不存在"
         )
     
-    employee_crud.delete(db, employee)
+    employee_crud.delete(db, employee, operator=current_user)
     return None

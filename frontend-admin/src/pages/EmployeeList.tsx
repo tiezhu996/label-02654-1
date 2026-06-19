@@ -12,16 +12,23 @@ import {
   Card,
   Row,
   Col,
+  Dropdown,
+  Upload,
+  Alert,
+  List,
 } from 'antd'
+import type { UploadProps } from 'antd'
 import {
   PlusOutlined,
   SearchOutlined,
   ExportOutlined,
+  ImportOutlined,
   EditOutlined,
   DeleteOutlined,
   EyeOutlined,
   ManOutlined,
   WomanOutlined,
+  DownOutlined,
 } from '@ant-design/icons'
 import type { ColumnsType, TablePaginationConfig } from 'antd/es/table'
 import {
@@ -29,6 +36,7 @@ import {
   Employee,
   EmployeeStatus,
   EmployeeListParams,
+  CsvImportResult,
 } from '../api/employee'
 import { useAuthStore } from '../stores/authStore'
 
@@ -41,6 +49,9 @@ const EmployeeList = () => {
   const [employees, setEmployees] = useState<Employee[]>([])
   const [total, setTotal] = useState(0)
   const [departments, setDepartments] = useState<string[]>([])
+  const [selectedRowKeys, setSelectedRowKeys] = useState<number[]>([])
+  const [importing, setImporting] = useState(false)
+  const [importResult, setImportResult] = useState<CsvImportResult | null>(null)
   const [params, setParams] = useState<EmployeeListParams>({
     page: 1,
     page_size: 10,
@@ -127,6 +138,133 @@ const EmployeeList = () => {
       page_size: pagination.pageSize || 10,
     })
   }
+
+  const handleBulkStatus = (newStatus: EmployeeStatus) => {
+    if (selectedRowKeys.length === 0) {
+      message.warning('请先选择员工')
+      return
+    }
+    const label = newStatus === 'active' ? '在职' : '离职'
+    Modal.confirm({
+      title: `批量修改状态为 "${label}"`,
+      content: `已选择 ${selectedRowKeys.length} 名员工，已离职的员工不会被修改。是否继续？`,
+      okText: '确定',
+      cancelText: '取消',
+      onOk: async () => {
+        try {
+          const result = await employeeApi.bulkUpdateStatus(
+            selectedRowKeys,
+            newStatus
+          )
+          message.success(
+            `操作完成：成功 ${result.success_count} 条，失败 ${result.failed_count} 条`
+          )
+          if (result.failed_count > 0) {
+            Modal.info({
+              title: '部分员工未变更',
+              width: 520,
+              content: (
+                <List
+                  size="small"
+                  bordered
+                  dataSource={result.failed_items}
+                  renderItem={(item) => (
+                    <List.Item>
+                      ID {item.id}：{item.reason}
+                    </List.Item>
+                  )}
+                />
+              ),
+            })
+          }
+          setSelectedRowKeys([])
+          loadEmployees()
+        } catch {
+          // Error handled by interceptor
+        }
+      },
+    })
+  }
+
+  const handleBulkDelete = () => {
+    if (selectedRowKeys.length === 0) {
+      message.warning('请先选择员工')
+      return
+    }
+    Modal.confirm({
+      title: '批量删除',
+      content: `确定要删除已选择的 ${selectedRowKeys.length} 名员工吗？此操作不可恢复。`,
+      okText: '删除',
+      okType: 'danger',
+      cancelText: '取消',
+      onOk: async () => {
+        try {
+          const result = await employeeApi.bulkDelete(selectedRowKeys)
+          message.success(
+            `操作完成：成功 ${result.success_count} 条，失败 ${result.failed_count} 条`
+          )
+          setSelectedRowKeys([])
+          loadEmployees()
+        } catch {
+          // Error handled by interceptor
+        }
+      },
+    })
+  }
+
+  const beforeUpload: UploadProps['beforeUpload'] = (file) => {
+    const isCsv =
+      file.type === 'text/csv' || file.name.toLowerCase().endsWith('.csv')
+    if (!isCsv) {
+      message.error('只能上传 CSV 文件')
+      return Upload.LIST_IGNORE
+    }
+    handleImport(file)
+    // 阻止 antd 自动上传
+    return false
+  }
+
+  const handleImport = async (file: File) => {
+    setImporting(true)
+    try {
+      const result = await employeeApi.importCsv(file)
+      setImportResult(result)
+      if (result.failed_count === 0) {
+        message.success(`导入成功 ${result.success_count} 条`)
+      } else {
+        message.warning(
+          `导入完成，成功 ${result.success_count} 条，失败 ${result.failed_count} 条`
+        )
+      }
+      loadEmployees()
+    } catch {
+      // Error handled by interceptor
+    } finally {
+      setImporting(false)
+    }
+  }
+
+  const bulkMenuItems = [
+    {
+      key: 'active',
+      label: '批量改为 在职',
+      onClick: () => handleBulkStatus('active'),
+    },
+    {
+      key: 'inactive',
+      label: '批量改为 离职',
+      onClick: () => handleBulkStatus('inactive'),
+    },
+    {
+      type: 'divider' as const,
+    },
+    {
+      key: 'delete',
+      danger: true,
+      label: '批量删除',
+      onClick: handleBulkDelete,
+    },
+  ]
 
   const columns: ColumnsType<Employee> = [
     {
@@ -287,23 +425,78 @@ const EmployeeList = () => {
             </Select>
           </Col>
           <Col xs={24} sm={12} md={10} style={{ textAlign: 'right' }}>
-            <Space>
+            <Space wrap>
               <Button icon={<ExportOutlined />} onClick={handleExport}>
                 导出 CSV
               </Button>
               {isAdmin && (
-                <Button
-                  type="primary"
-                  icon={<PlusOutlined />}
-                  onClick={() => navigate('/employees/new')}
-                >
-                  添加员工
-                </Button>
+                <>
+                  <Upload
+                    accept=".csv"
+                    showUploadList={false}
+                    beforeUpload={beforeUpload}
+                    disabled={importing}
+                  >
+                    <Button
+                      icon={<ImportOutlined />}
+                      loading={importing}
+                    >
+                      导入 CSV
+                    </Button>
+                  </Upload>
+                  <Dropdown
+                    menu={{ items: bulkMenuItems }}
+                    disabled={selectedRowKeys.length === 0}
+                  >
+                    <Button>
+                      <Space>
+                        批量操作({selectedRowKeys.length})
+                        <DownOutlined />
+                      </Space>
+                    </Button>
+                  </Dropdown>
+                  <Button
+                    type="primary"
+                    icon={<PlusOutlined />}
+                    onClick={() => navigate('/employees/new')}
+                  >
+                    添加员工
+                  </Button>
+                </>
               )}
             </Space>
           </Col>
         </Row>
       </Card>
+
+      {importResult && (
+        <Alert
+          style={{ marginBottom: 16 }}
+          type={importResult.failed_count === 0 ? 'success' : 'warning'}
+          showIcon
+          closable
+          onClose={() => setImportResult(null)}
+          message={
+            <span>
+              CSV 导入完成：成功 {importResult.success_count} 条，失败{' '}
+              {importResult.failed_count} 条
+            </span>
+          }
+          description={
+            importResult.errors.length > 0 && (
+              <List
+                size="small"
+                dataSource={importResult.errors}
+                renderItem={(err) => (
+                  <List.Item>
+                    第 {err.row} 行：{err.reason}
+                  </List.Item>
+                )}
+              />
+            )
+          }
+        />
+      )}
 
       <Card>
         <Table
@@ -312,6 +505,15 @@ const EmployeeList = () => {
           rowKey="id"
           loading={loading}
           scroll={{ x: 1200 }}
+          rowSelection={
+            isAdmin
+              ? {
+                  selectedRowKeys,
+                  onChange: (keys) => setSelectedRowKeys(keys as number[]),
+                  preserveSelectedRowKeys: true,
+                }
+              : undefined
+          }
           pagination={{
             current: params.page,
             pageSize: params.page_size,
