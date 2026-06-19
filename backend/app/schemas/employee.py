@@ -56,3 +56,34 @@ class EmployeeListResponse(BaseModel):
     page: int
     page_size: int
     total_pages: int
+
+
+class BulkUpdateStatusRequest(BaseModel):
+    """Schema for bulk updating employee status."""
+    ids: List[int]
+    status: EmployeeStatus
+
+
+class BulkDeleteRequest(BaseModel):
+    """Schema for bulk deleting employees."""
+    ids: List[int]
+
+
+class BulkOperationResult(BaseModel):
+    """Schema for bulk operation result."""
+    success_count: int
+    failed_count: int
+    failed_items: List[dict] = []  # [{id, reason}]
+
+
+class CsvImportRowError(BaseModel):
+    """Schema describing a failed row during CSV import."""
+    row: int
+    reason: str
+
+
+class CsvImportResult(BaseModel):
+    """Schema for CSV import result."""
+    success_count: int
+    failed_count: int
+    errors: List[CsvImportRowError] = []

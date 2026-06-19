@@ -6,7 +6,7 @@ from contextlib import asynccontextmanager
 
 from app.core.config import settings
 from app.core.database import engine, Base
-from app.api import auth, employees
+from app.api import auth, employees, audit_logs
 from app.models.user import User, UserRole
 from app.crud.user import user_crud
 from app.core.database import SessionLocal
@@ -88,6 +88,7 @@ app.add_middleware(
 # Include routers
 app.include_router(auth.router, prefix="/api")
 app.include_router(employees.router, prefix="/api")
+app.include_router(audit_logs.router, prefix="/api")
 
 
 @app.get("/", tags=["健康检查"])
